@@ -15,6 +15,7 @@ Interactive scripts to automatically harden your server and configure nginx as a
 ⚡ **Performance Tuning** - Increase file descriptors and system limits  
 🌍 **Timezone Setup** - Configure server timezone  
 👤 **User Management** - Create non-root sudo user with SSH keys  
+🔧 **Error Resilient** - Continues on errors, completes all steps possible
 
 ### 🔄 Nginx Reverse Proxy (`setup-proxy.sh`)
 ✨ **One-Command Setup** - Install and configure everything with a single command  
@@ -23,6 +24,7 @@ Interactive scripts to automatically harden your server and configure nginx as a
 🛡️ **Safe** - Checks existing configs and asks before overwriting  
 📦 **Smart Installation** - Only installs what you need  
 ⚡ **Production Ready** - Includes proper headers for WebSocket, real IP, and more
+🔧 **Error Resilient** - Continues on errors, skips failed steps gracefully
 
 ## Quick Start
 
@@ -32,22 +34,22 @@ Run both scripts to harden your server and set up a reverse proxy:
 
 ```bash
 # 1. Harden your server first
-curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/harden-server.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/harden-server.sh -o harden-server.sh && sudo bash harden-server.sh
 
 # 2. Set up reverse proxy
-curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/setup-proxy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/setup-proxy.sh -o setup-proxy.sh && sudo bash setup-proxy.sh
 ```
 
 ### Just Need Reverse Proxy?
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/setup-proxy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/setup-proxy.sh -o setup-proxy.sh && sudo bash setup-proxy.sh
 ```
 
 ### Just Need Hardening?
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/harden-server.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/harden-server.sh -o harden-server.sh && sudo bash harden-server.sh
 ```
 
 That's it! The scripts will guide you through the rest.
@@ -70,6 +72,8 @@ That's it! The scripts will guide you through the rest.
 7. **Timezone** - Sets proper timezone for logs
 8. **User Creation** - Creates non-root sudo user with SSH key setup
 
+**Note:** The script continues on errors and completes all possible steps. If one component fails (e.g., swap creation), the script reports the error and moves to the next step, ensuring maximum configuration coverage.
+
 ### Reverse Proxy Script
 
 1. **Checks for nginx** - Installs if missing (with your permission)
@@ -80,6 +84,8 @@ That's it! The scripts will guide you through the rest.
 6. **Generates config** - Creates optimized nginx reverse proxy config
 7. **Enables site** - Activates and reloads nginx
 8. **Optional SSL** - Sets up Let's Encrypt certificate if you want
+
+**Note:** The script is designed to be resilient - if a step fails (e.g., SSL certificate installation), it reports the error and continues, allowing you to fix issues and complete setup manually later.
 
 ## Requirements
 
@@ -93,7 +99,7 @@ That's it! The scripts will guide you through the rest.
 ### Hardening a Fresh Server
 
 ```bash
-$ curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/harden-server.sh | sudo bash
+$ curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/harden-server.sh -o harden-server.sh && sudo bash harden-server.sh
 
 🛡️  Server Hardening Script
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -146,7 +152,7 @@ Summary of what was configured:
 ### Setting Up Reverse Proxy
 
 ```bash
-$ curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/setup-proxy.sh | sudo bash
+$ curl -fsSL https://raw.githubusercontent.com/angga2oioi/setup-linux-server/main/setup-proxy.sh -o setup-proxy.sh && sudo bash setup-proxy.sh
 
 ℹ Nginx Reverse Proxy Setup Script
 
