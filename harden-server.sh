@@ -1,6 +1,7 @@
 #!/bin/bash
 
-set -e
+# Note: Script will continue on errors and skip failed steps
+# set -e is intentionally NOT used to allow script to continue
 
 # Colors for output
 RED='\033[0;31m'
@@ -33,6 +34,18 @@ print_section() {
     echo -e "${CYAN}$1${NC}"
     echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+}
+
+# Execute command and continue on error
+execute_and_continue() {
+    local description="$1"
+    shift
+    if "$@"; then
+        return 0
+    else
+        print_error "$description failed (continuing...)"
+        return 1
+    fi
 }
 
 confirm() {
@@ -90,27 +103,30 @@ if swapon --show | grep -q "/swapfile"; then
             print_error "Invalid swap size. Skipping."
         else
             print_info "Removing old swap..."
-            swapoff /swapfile
-            rm /swapfile
+            swapoff /swapfile 2>/dev/null || print_warning "Failed to turn off swap"
+            rm /swapfile 2>/dev/null || print_warning "Failed to remove swap file"
             
             print_info "Creating ${SWAP_SIZE}GB swap file..."
-            fallocate -l ${SWAP_SIZE}G /swapfile
-            chmod 600 /swapfile
-            mkswap /swapfile
-            swapon /swapfile
-            
-            # Make permanent
-            if ! grep -q "/swapfile" /etc/fstab; then
-                echo "/swapfile none swap sw 0 0" >> /etc/fstab
+            if fallocate -l ${SWAP_SIZE}G /swapfile 2>/dev/null; then
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                
+                # Make permanent
+                if ! grep -q "/swapfile" /etc/fstab; then
+                    echo "/swapfile none swap sw 0 0" >> /etc/fstab
+                fi
+                
+                # Set swappiness
+                sysctl vm.swappiness=10 2>/dev/null || print_warning "Failed to set swappiness"
+                if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
+                    echo "vm.swappiness=10" >> /etc/sysctl.conf
+                fi
+                
+                print_success "Swap configured: ${SWAP_SIZE}GB"
+            else
+                print_error "Failed to create swap file. Skipping."
             fi
-            
-            # Set swappiness
-            sysctl vm.swappiness=10
-            if ! grep -q "vm.swappiness" /etc/sysctl.conf; then
-                echo "vm.swappiness=10" >> /etc/sysctl.conf
-            fi
-            
-            print_success "Swap configured: ${SWAP_SIZE}GB"
         fi
     fi
 else
@@ -123,19 +139,22 @@ else
             print_error "Invalid swap size. Skipping."
         else
             print_info "Creating ${SWAP_SIZE}GB swap file..."
-            fallocate -l ${SWAP_SIZE}G /swapfile
-            chmod 600 /swapfile
-            mkswap /swapfile
-            swapon /swapfile
-            
-            # Make permanent
-            echo "/swapfile none swap sw 0 0" >> /etc/fstab
-            
-            # Set swappiness
-            sysctl vm.swappiness=10
-            echo "vm.swappiness=10" >> /etc/sysctl.conf
-            
-            print_success "Swap created: ${SWAP_SIZE}GB"
+            if fallocate -l ${SWAP_SIZE}G /swapfile 2>/dev/null; then
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                
+                # Make permanent
+                echo "/swapfile none swap sw 0 0" >> /etc/fstab
+                
+                # Set swappiness
+                sysctl vm.swappiness=10 2>/dev/null || print_warning "Failed to set swappiness"
+                echo "vm.swappiness=10" >> /etc/sysctl.conf
+                
+                print_success "Swap created: ${SWAP_SIZE}GB"
+            else
+                print_error "Failed to create swap file. Skipping."
+            fi
         fi
     else
         print_info "Skipping swap creation"
@@ -151,9 +170,11 @@ if command -v ufw &> /dev/null; then
     print_success "UFW is already installed"
 else
     if confirm "UFW not found. Install it?"; then
-        apt-get update
-        apt-get install -y ufw
-        print_success "UFW installed"
+        if apt-get update && apt-get install -y ufw; then
+            print_success "UFW installed"
+        else
+            print_error "Failed to install UFW. Skipping firewall configuration."
+        fi
     else
         print_info "Skipping firewall configuration"
     fi
@@ -175,17 +196,17 @@ if command -v ufw &> /dev/null; then
         
         if confirm "Apply these rules?"; then
             # Set defaults
-            ufw default deny incoming
-            ufw default allow outgoing
+            ufw default deny incoming 2>/dev/null || print_warning "Failed to set default deny"
+            ufw default allow outgoing 2>/dev/null || print_warning "Failed to set default allow"
             
             # SSH
             read -p "SSH port (default 22): " SSH_PORT
             SSH_PORT=${SSH_PORT:-22}
-            ufw allow $SSH_PORT/tcp comment 'SSH'
+            ufw allow $SSH_PORT/tcp comment 'SSH' 2>/dev/null || print_warning "Failed to add SSH rule"
             
             # HTTP/HTTPS
-            ufw allow 80/tcp comment 'HTTP'
-            ufw allow 443/tcp comment 'HTTPS'
+            ufw allow 80/tcp comment 'HTTP' 2>/dev/null || print_warning "Failed to add HTTP rule"
+            ufw allow 443/tcp comment 'HTTPS' 2>/dev/null || print_warning "Failed to add HTTPS rule"
             
             # Custom ports
             if confirm "Do you want to add any custom ports?"; then
@@ -212,10 +233,13 @@ if command -v ufw &> /dev/null; then
             
             # Enable UFW
             print_warning "Enabling UFW now..."
-            ufw --force enable
-            print_success "Firewall configured and enabled"
-            echo ""
-            ufw status verbose
+            if ufw --force enable 2>/dev/null; then
+                print_success "Firewall configured and enabled"
+                echo ""
+                ufw status verbose 2>/dev/null || print_warning "Could not display UFW status"
+            else
+                print_error "Failed to enable UFW. Skipping."
+            fi
         else
             print_info "Skipping firewall configuration"
         fi
@@ -234,11 +258,13 @@ if command -v fail2ban-client &> /dev/null; then
 else
     print_info "Fail2ban protects against brute force attacks"
     if confirm "Do you want to install fail2ban?"; then
-        apt-get update
-        apt-get install -y fail2ban
-        systemctl enable fail2ban
-        systemctl start fail2ban
-        print_success "Fail2ban installed and started"
+        if apt-get update && apt-get install -y fail2ban; then
+            systemctl enable fail2ban 2>/dev/null || print_warning "Failed to enable fail2ban service"
+            systemctl start fail2ban 2>/dev/null || print_warning "Failed to start fail2ban service"
+            print_success "Fail2ban installed and started"
+        else
+            print_error "Failed to install fail2ban. Skipping."
+        fi
     else
         print_info "Skipping fail2ban"
     fi
@@ -246,7 +272,7 @@ fi
 
 if command -v fail2ban-client &> /dev/null; then
     if confirm "Do you want to configure fail2ban for SSH protection?"; then
-        cat > /etc/fail2ban/jail.local <<EOF
+        if cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 bantime = 3600
 findtime = 600
@@ -260,9 +286,16 @@ port = ssh
 logpath = %(sshd_log)s
 backend = %(sshd_backend)s
 EOF
-        systemctl restart fail2ban
-        print_success "Fail2ban configured for SSH"
-        print_info "Settings: 5 attempts in 10 minutes = 1 hour ban"
+        then
+            if systemctl restart fail2ban 2>/dev/null; then
+                print_success "Fail2ban configured for SSH"
+                print_info "Settings: 5 attempts in 10 minutes = 1 hour ban"
+            else
+                print_error "Failed to restart fail2ban service"
+            fi
+        else
+            print_error "Failed to write fail2ban configuration. Skipping."
+        fi
     else
         print_info "Skipping fail2ban configuration"
     fi
@@ -282,9 +315,14 @@ echo ""
 
 if confirm "Do you want to harden SSH configuration?"; then
     # Backup
-    cp $SSH_CONFIG $SSH_BACKUP
-    print_success "Backup created: $SSH_BACKUP"
+    if cp $SSH_CONFIG $SSH_BACKUP 2>/dev/null; then
+        print_success "Backup created: $SSH_BACKUP"
+    else
+        print_error "Failed to create backup. Skipping SSH hardening."
+    fi
     
+    # Only proceed if backup was successful
+    if [ -f $SSH_BACKUP ]; then
     # Disable root login
     if confirm "Disable root login via SSH? (Recommended if you have another sudo user)"; then
         print_warning "Make sure you have another user with sudo access!"
@@ -344,12 +382,17 @@ if confirm "Do you want to harden SSH configuration?"; then
     # Restart SSH
     print_warning "SSH configuration changed. Need to restart SSH service."
     if confirm "Restart SSH now? (Your current session will remain active)"; then
-        systemctl restart sshd
-        print_success "SSH service restarted"
-        print_warning "Test new SSH connection in another terminal before closing this one!"
+        if systemctl restart sshd 2>/dev/null; then
+            print_success "SSH service restarted"
+            print_warning "Test new SSH connection in another terminal before closing this one!"
+        else
+            print_error "Failed to restart SSH service"
+        fi
     else
         print_warning "Remember to restart SSH: sudo systemctl restart sshd"
     fi
+    
+    fi  # End of backup check
 else
     print_info "Skipping SSH hardening"
 fi
@@ -360,12 +403,12 @@ fi
 print_section "🔄 Automatic Security Updates"
 
 if confirm "Enable automatic security updates?"; then
-    apt-get update
-    apt-get install -y unattended-upgrades
-    
-    dpkg-reconfigure -plow unattended-upgrades
-    
-    print_success "Automatic security updates enabled"
+    if apt-get update && apt-get install -y unattended-upgrades; then
+        dpkg-reconfigure -plow unattended-upgrades 2>/dev/null || print_warning "Failed to configure unattended-upgrades"
+        print_success "Automatic security updates enabled"
+    else
+        print_error "Failed to install unattended-upgrades. Skipping."
+    fi
 else
     print_info "Skipping automatic updates"
 fi
@@ -379,7 +422,7 @@ if confirm "Increase system limits for better performance?"; then
     print_info "This will increase file descriptors and connection limits"
     
     # File descriptors
-    cat >> /etc/security/limits.conf <<EOF
+    if cat >> /etc/security/limits.conf <<EOF
 
 # Increased limits for better performance
 * soft nofile 65535
@@ -387,9 +430,14 @@ if confirm "Increase system limits for better performance?"; then
 root soft nofile 65535
 root hard nofile 65535
 EOF
+    then
+        print_success "File descriptor limits configured"
+    else
+        print_error "Failed to configure file descriptor limits"
+    fi
     
     # Sysctl tweaks
-    cat >> /etc/sysctl.conf <<EOF
+    if cat >> /etc/sysctl.conf <<EOF
 
 # Performance and security tweaks
 net.core.somaxconn = 65535
@@ -398,10 +446,12 @@ net.ipv4.ip_local_port_range = 1024 65535
 net.ipv4.tcp_tw_reuse = 1
 fs.file-max = 2097152
 EOF
-    
-    sysctl -p
-    
-    print_success "System limits increased"
+    then
+        sysctl -p 2>/dev/null || print_warning "Failed to apply sysctl settings"
+        print_success "System limits increased"
+    else
+        print_error "Failed to configure sysctl settings"
+    fi
 else
     print_info "Skipping system limits"
 fi
@@ -449,22 +499,23 @@ if confirm "Do you want to create a non-root sudo user?"; then
     elif id "$NEW_USER" &>/dev/null; then
         print_warning "User $NEW_USER already exists"
     else
-        adduser --gecos "" $NEW_USER
-        usermod -aG sudo $NEW_USER
-        
-        print_success "User $NEW_USER created with sudo privileges"
-        
-        if confirm "Do you want to copy SSH keys from root to $NEW_USER?"; then
-            if [ -d /root/.ssh ]; then
-                mkdir -p /home/$NEW_USER/.ssh
-                cp /root/.ssh/authorized_keys /home/$NEW_USER/.ssh/ 2>/dev/null || true
-                chown -R $NEW_USER:$NEW_USER /home/$NEW_USER/.ssh
-                chmod 700 /home/$NEW_USER/.ssh
-                chmod 600 /home/$NEW_USER/.ssh/authorized_keys
-                print_success "SSH keys copied to $NEW_USER"
-            else
-                print_warning "No SSH keys found in /root/.ssh"
+        if adduser --gecos "" $NEW_USER 2>/dev/null && usermod -aG sudo $NEW_USER 2>/dev/null; then
+            print_success "User $NEW_USER created with sudo privileges"
+            
+            if confirm "Do you want to copy SSH keys from root to $NEW_USER?"; then
+                if [ -d /root/.ssh ]; then
+                    mkdir -p /home/$NEW_USER/.ssh 2>/dev/null
+                    cp /root/.ssh/authorized_keys /home/$NEW_USER/.ssh/ 2>/dev/null || print_warning "No authorized_keys found"
+                    chown -R $NEW_USER:$NEW_USER /home/$NEW_USER/.ssh 2>/dev/null
+                    chmod 700 /home/$NEW_USER/.ssh 2>/dev/null
+                    chmod 600 /home/$NEW_USER/.ssh/authorized_keys 2>/dev/null
+                    print_success "SSH keys copied to $NEW_USER"
+                else
+                    print_warning "No SSH keys found in /root/.ssh"
+                fi
             fi
+        else
+            print_error "Failed to create user $NEW_USER. Skipping."
         fi
     fi
 else

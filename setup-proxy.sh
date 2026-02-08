@@ -1,6 +1,7 @@
 #!/bin/bash
 
-set -e
+# Note: Script will continue on errors and skip failed steps
+# set -e is intentionally NOT used to allow script to continue
 
 # Colors for output
 RED='\033[0;31m'
@@ -52,14 +53,15 @@ if ! command -v nginx &> /dev/null; then
     print_warning "Nginx is not installed"
     if confirm "Do you want to install nginx?"; then
         print_info "Installing nginx..."
-        apt-get update
-        apt-get install -y nginx
-        systemctl enable nginx
-        systemctl start nginx
-        print_success "Nginx installed successfully"
+        if apt-get update && apt-get install -y nginx; then
+            systemctl enable nginx 2>/dev/null || print_warning "Failed to enable nginx service"
+            systemctl start nginx 2>/dev/null || print_warning "Failed to start nginx service"
+            print_success "Nginx installed successfully"
+        else
+            print_error "Nginx installation failed. Script will continue but may not work properly."
+        fi
     else
-        print_error "Nginx is required for this script. Exiting."
-        exit 1
+        print_error "Nginx is required for this script. Continuing anyway..."
     fi
 else
     print_success "Nginx is already installed"
@@ -73,9 +75,11 @@ if ! command -v certbot &> /dev/null; then
     print_warning "Certbot is not installed"
     if confirm "Do you want to install certbot?"; then
         print_info "Installing certbot..."
-        apt-get update
-        apt-get install -y certbot python3-certbot-nginx
-        print_success "Certbot installed successfully"
+        if apt-get update && apt-get install -y certbot python3-certbot-nginx; then
+            print_success "Certbot installed successfully"
+        else
+            print_error "Certbot installation failed. SSL setup will be skipped."
+        fi
     else
         print_warning "Certbot not installed. SSL setup will be skipped."
     fi
@@ -90,14 +94,15 @@ print_info "Enter the domain name for the reverse proxy:"
 read -p "Domain (e.g., api.example.com): " DOMAIN
 
 if [ -z "$DOMAIN" ]; then
-    print_error "Domain cannot be empty. Exiting."
-    exit 1
+    print_error "Domain cannot be empty. Skipping reverse proxy setup."
+else
+    print_info "Domain set to: $DOMAIN"
 fi
 
-print_info "Domain set to: $DOMAIN"
 echo ""
 
-# 4. Check if config exists
+# 4. Check if config exists (only if domain is set)
+if [ ! -z "$DOMAIN" ]; then
 CONFIG_FILE="/etc/nginx/sites-available/$DOMAIN"
 CONFIG_ENABLED="/etc/nginx/sites-enabled/$DOMAIN"
 
@@ -112,13 +117,11 @@ if [ -f "$CONFIG_FILE" ]; then
         read -p "Port (e.g., 3000): " PROXY_PORT
         
         if [ -z "$PROXY_IP" ] || [ -z "$PROXY_PORT" ]; then
-            print_error "IP and Port cannot be empty. Exiting."
-            exit 1
-        fi
-        
-        print_info "Creating nginx configuration for $DOMAIN -> $PROXY_IP:$PROXY_PORT"
-        
-        cat > "$CONFIG_FILE" <<EOF
+            print_error "IP and Port cannot be empty. Skipping configuration update."
+        else
+            print_info "Creating nginx configuration for $DOMAIN -> $PROXY_IP:$PROXY_PORT"
+            
+            if cat > "$CONFIG_FILE" <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -137,8 +140,12 @@ server {
     }
 }
 EOF
-        
-        print_success "Configuration file created"
+            then
+                print_success "Configuration file created"
+            else
+                print_error "Failed to create configuration file. Skipping."
+            fi
+        fi
     fi
 else
     # Config doesn't exist, create new one
@@ -149,13 +156,11 @@ else
     read -p "Port (e.g., 3000): " PROXY_PORT
     
     if [ -z "$PROXY_IP" ] || [ -z "$PROXY_PORT" ]; then
-        print_error "IP and Port cannot be empty. Exiting."
-        exit 1
-    fi
-    
-    print_info "Creating nginx configuration for $DOMAIN -> $PROXY_IP:$PROXY_PORT"
-    
-    cat > "$CONFIG_FILE" <<EOF
+        print_error "IP and Port cannot be empty. Skipping configuration creation."
+    else
+        print_info "Creating nginx configuration for $DOMAIN -> $PROXY_IP:$PROXY_PORT"
+        
+        if cat > "$CONFIG_FILE" <<EOF
 server {
     listen 80;
     listen [::]:80;
@@ -174,37 +179,54 @@ server {
     }
 }
 EOF
-    
-    print_success "Configuration file created"
+        then
+            print_success "Configuration file created"
+        else
+            print_error "Failed to create configuration file. Skipping."
+        fi
+    fi
 fi
 
 echo ""
 
-# 5. Enable the site
-if [ ! -L "$CONFIG_ENABLED" ]; then
-    print_info "Enabling site..."
-    ln -s "$CONFIG_FILE" "$CONFIG_ENABLED"
-    print_success "Site enabled"
+# 5. Enable the site (only if config file exists)
+if [ -f "$CONFIG_FILE" ]; then
+    if [ ! -L "$CONFIG_ENABLED" ]; then
+        print_info "Enabling site..."
+        if ln -s "$CONFIG_FILE" "$CONFIG_ENABLED" 2>/dev/null; then
+            print_success "Site enabled"
+        else
+            print_error "Failed to enable site. Skipping."
+        fi
+    else
+        print_success "Site is already enabled"
+    fi
 else
-    print_success "Site is already enabled"
+    print_warning "Configuration file not found. Skipping site enable."
 fi
 
 # 6. Test nginx configuration
-print_info "Testing nginx configuration..."
-if nginx -t; then
-    print_success "Nginx configuration is valid"
-    print_info "Reloading nginx..."
-    systemctl reload nginx
-    print_success "Nginx reloaded"
+if command -v nginx &> /dev/null; then
+    print_info "Testing nginx configuration..."
+    if nginx -t 2>/dev/null; then
+        print_success "Nginx configuration is valid"
+        print_info "Reloading nginx..."
+        if systemctl reload nginx 2>/dev/null; then
+            print_success "Nginx reloaded"
+        else
+            print_error "Failed to reload nginx. You may need to reload manually."
+        fi
+    else
+        print_error "Nginx configuration test failed. Please check the configuration manually."
+    fi
 else
-    print_error "Nginx configuration test failed. Please check the configuration."
-    exit 1
+    print_warning "Nginx is not available. Skipping configuration test."
 fi
 
 echo ""
 
 # 7. SSL Setup with Let's Encrypt
-if command -v certbot &> /dev/null; then
+if [ ! -z "$DOMAIN" ] && command -v certbot &> /dev/null; then
     if confirm "Do you want to setup SSL with Let's Encrypt for $DOMAIN?"; then
         print_warning "Make sure:"
         print_warning "  1. DNS is pointing to this server"
@@ -217,26 +239,33 @@ if command -v certbot &> /dev/null; then
             print_error "Email cannot be empty. Skipping SSL setup."
         else
             print_info "Running certbot..."
-            certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email "$EMAIL" --redirect
-            
-            if [ $? -eq 0 ]; then
+            if certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email "$EMAIL" --redirect 2>/dev/null; then
                 print_success "SSL certificate installed successfully!"
             else
-                print_error "SSL setup failed. You can run certbot manually later."
+                print_error "SSL setup failed. You can run certbot manually later with: sudo certbot --nginx -d $DOMAIN"
             fi
         fi
     else
         print_info "Skipping SSL setup"
     fi
+elif [ -z "$DOMAIN" ]; then
+    print_warning "No domain configured. Skipping SSL setup."
 else
     print_warning "Certbot not installed. Skipping SSL setup."
 fi
 
+# Close the domain check if statement
+fi
+
 echo ""
 print_success "✨ Setup complete!"
-print_info "Your reverse proxy is configured at: $DOMAIN"
-print_info "Config file: $CONFIG_FILE"
-echo ""
-print_info "To view logs: sudo tail -f /var/log/nginx/access.log"
-print_info "To edit config: sudo nano $CONFIG_FILE"
+if [ ! -z "$DOMAIN" ]; then
+    print_info "Your reverse proxy is configured at: $DOMAIN"
+    print_info "Config file: $CONFIG_FILE"
+    echo ""
+    print_info "To view logs: sudo tail -f /var/log/nginx/access.log"
+    print_info "To edit config: sudo nano $CONFIG_FILE"
+else
+    print_info "No domain was configured during this run."
+fi
 print_info "To reload nginx: sudo systemctl reload nginx"
